@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF → Markdown</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="bg"></div>
+  <main class="shell">
+    <header class="hero">
+      <div class="badge">pdf-inspector · AnyDoc · olmOCR 2</div>
+      <h1>PDF → Markdown</h1>
+      <p class="lede">
+        Firecrawl <strong>pdf-inspector</strong> routes pages and extracts native text.
+        Scanned pages go through <strong>olmOCR 2</strong>. Office docs use <strong>AnyDoc</strong>.
+        Point at a <strong>folder</strong> to process everything into a <code>markdown/</code> subfolder.
+      </p>
+    </header>
+
+    <section class="panel tabs-bar">
+      <button type="button" class="seg active" data-seg="file">Single file</button>
+      <button type="button" class="seg" data-seg="folder">Folder batch</button>
+    </section>
+
+    <section id="seg-file">
+      <section class="panel drop" id="dropzone" tabindex="0">
+        <input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.docx,.doc,.pptx,.xlsx,.odt,.rtf,.epub,.csv" hidden />
+        <div class="drop-inner">
+          <div class="icon">⇪</div>
+          <div>
+            <strong id="file-label">Drop a PDF or document</strong>
+            <div class="muted">or click to browse · max ~80&nbsp;MB</div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section id="seg-folder" hidden>
+      <section class="panel">
+        <label class="field">
+          <span>Local folder path (server reads this path)</span>
+          <input id="folder" type="text" placeholder="C:\Users\hello\Downloads\stuff_to_convert  or  /mnt/c/Users/hello/Downloads/stuff_to_convert" spellcheck="false" />
+        </label>
+        <div class="row2">
+          <label class="field">
+            <span>Output subfolder name</span>
+            <input id="out_subdir" type="text" value="markdown" />
+          </label>
+          <label class="check">
+            <input type="checkbox" id="recursive" checked />
+            <span>Recursive</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="skip_existing" checked />
+            <span>Skip existing .md</span>
+          </label>
+        </div>
+        <p class="hint">
+          Writes <code>&lt;folder&gt;/&lt;subfolder&gt;/…</code> mirroring relative paths.
+          CLI: <code>python -m app.batch /path/to/folder</code>
+        </p>
+      </section>
+    </section>
+
+    <section class="panel controls">
+      <label class="field">
+        <span>Mode</span>
+        <select id="mode">
+          <option value="auto" selected>Auto (inspector + olmOCR when needed)</option>
+          <option value="native">Native only (pdf-inspector)</option>
+          <option value="olmocr">Full olmOCR 2</option>
+          <option value="ppocr">pdf-inspector PP-OCR</option>
+          <option value="anydoc">AnyDoc (office / non-PDF)</option>
+        </select>
+      </label>
+      <details class="advanced">
+        <summary>Advanced · olmOCR server / model</summary>
+        <div class="adv-grid">
+          <label class="field">
+            <span>Model</span>
+            <input id="model" placeholder="allenai/olmOCR-2-7B-1025-FP8" />
+          </label>
+          <label class="field">
+            <span>OpenAI-compatible server</span>
+            <input id="server" placeholder="http://localhost:8000/v1 or provider URL" />
+          </label>
+          <label class="field">
+            <span>API key (optional)</span>
+            <input id="api_key" type="password" placeholder="for remote providers" autocomplete="off" />
+          </label>
+        </div>
+        <p class="hint">
+          Local 7B FP8 wants free VRAM. On 10&nbsp;GB, free GPU memory first or set a remote
+          <code>server</code>.
+        </p>
+      </details>
+      <button id="go" class="btn primary" disabled>Convert to Markdown</button>
+    </section>
+
+    <section class="panel status" id="status" hidden>
+      <div class="spinner" id="spinner"></div>
+      <div>
+        <div id="status-title">Working…</div>
+        <div class="muted" id="status-sub">Routing with pdf-inspector</div>
+      </div>
+    </section>
+
+    <section class="panel result" id="result" hidden>
+      <div class="result-head">
+        <div class="meta" id="meta"></div>
+        <div class="actions">
+          <button type="button" class="btn ghost" id="copy">Copy</button>
+          <a class="btn ghost" id="download" href="#">Download .md</a>
+        </div>
+      </div>
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="preview">Preview</button>
+        <button type="button" class="tab" data-tab="raw">Raw Markdown</button>
+      </div>
+      <div id="preview" class="preview markdown-body"></div>
+      <pre id="raw" class="raw" hidden></pre>
+      <div class="warn" id="warn" hidden></div>
+    </section>
+
+    <section class="panel result" id="batch-result" hidden>
+      <div class="result-head">
+        <div class="meta" id="batch-meta"></div>
+      </div>
+      <pre id="batch-log" class="raw batch-log"></pre>
+      <div class="warn" id="batch-warn" hidden></div>
+    </section>
+
+    <footer class="foot">
+      <span id="health">checking…</span>
+      · local tool · folder batch writes on this machine
+    </footer>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
