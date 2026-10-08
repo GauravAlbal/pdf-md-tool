@@ -135,6 +135,7 @@
       model: $("model").value.trim(),
       server: $("server").value.trim(),
       api_key: $("api_key").value.trim(),
+      ocr_engine: ($("ocr_engine") && $("ocr_engine").value) || "lighton",
     };
   }
 
@@ -252,14 +253,6 @@
         showBatch(data);
       } else {
         if (!selected) return;
-        statusTitle.textContent = "Converting…";
-        statusSub.textContent =
-          $("mode").value === "native"
-            ? "pdf-inspector native extraction"
-            : $("mode").value === "olmocr"
-              ? "olmOCR 2 (this can take a while)"
-              : "auto route · may call olmOCR on scanned pages";
-
         const fd = new FormData();
         fd.append("file", selected);
         const opts = sharedOpts();
@@ -267,7 +260,7 @@
         fd.append("model", opts.model);
         fd.append("server", opts.server);
         fd.append("api_key", opts.api_key);
-
+        fd.append("ocr_engine", opts.ocr_engine);
         const res = await fetch("/api/parse", { method: "POST", body: fd });
         const text = await res.text();
         let data;

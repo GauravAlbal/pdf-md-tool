@@ -10,11 +10,12 @@
   <div class="bg"></div>
   <main class="shell">
     <header class="hero">
-      <div class="badge">pdf-inspector · AnyDoc · olmOCR 2</div>
+      <div class="badge">pdf-inspector · LightOnOCR-3 · AnyDoc · olmOCR</div>
       <h1>PDF → Markdown</h1>
       <p class="lede">
         Firecrawl <strong>pdf-inspector</strong> routes pages and extracts native text.
-        Scanned pages go through <strong>olmOCR 2</strong>. Office docs use <strong>AnyDoc</strong>.
+        Scanned pages default to <strong>LightOnOCR-3</strong> (0.8B).
+        Optional <strong>olmOCR 2</strong>. Office docs use <strong>AnyDoc</strong>.
         Point at a <strong>folder</strong> to process everything into a <code>markdown/</code> subfolder.
       </p>
     </header>
@@ -68,23 +69,31 @@
       <label class="field">
         <span>Mode</span>
         <select id="mode">
-          <option value="auto" selected>Auto (inspector + olmOCR when needed)</option>
+          <option value="auto" selected>Auto (inspector + LightOnOCR when needed)</option>
           <option value="native">Native only (pdf-inspector)</option>
+          <option value="lighton">Full LightOnOCR-3</option>
           <option value="olmocr">Full olmOCR 2</option>
           <option value="ppocr">pdf-inspector PP-OCR</option>
           <option value="anydoc">AnyDoc (office / non-PDF)</option>
         </select>
       </label>
       <details class="advanced">
-        <summary>Advanced · olmOCR server / model</summary>
+        <summary>Advanced · OCR engine / model / server</summary>
         <div class="adv-grid">
           <label class="field">
-            <span>Model</span>
-            <input id="model" placeholder="allenai/olmOCR-2-7B-1025-FP8" />
+            <span>OCR engine (for Auto)</span>
+            <select id="ocr_engine">
+              <option value="lighton" selected>LightOnOCR-3 (default)</option>
+              <option value="olmocr">olmOCR 2</option>
+            </select>
           </label>
           <label class="field">
-            <span>OpenAI-compatible server</span>
-            <input id="server" placeholder="http://localhost:8000/v1 or provider URL" />
+            <span>Model</span>
+            <input id="model" placeholder="lightonai/LightOnOCR-3-0.8B" />
+          </label>
+          <label class="field">
+            <span>OpenAI-compatible server (optional)</span>
+            <input id="server" placeholder="http://127.0.0.1:8010/v1 — else local transformers" />
           </label>
           <label class="field">
             <span>API key (optional)</span>
@@ -92,8 +101,8 @@
           </label>
         </div>
         <p class="hint">
-          Local 7B FP8 wants free VRAM. On 10&nbsp;GB, free GPU memory first or set a remote
-          <code>server</code>.
+          Default: <code>LightOnOCR-3-0.8B</code> via transformers (good on 10&nbsp;GB).
+          Set a vLLM <code>server</code> for faster multi-page. Use mode olmOCR for the 7B Ai2 stack.
         </p>
       </details>
       <button id="go" class="btn primary" disabled>Convert to Markdown</button>

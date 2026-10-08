@@ -6,15 +6,17 @@ aiofiles>=24.1
 jinja2>=3.1
 pydantic>=2.0
 pydantic-settings>=2.0
+pillow>=10.0
+pypdfium2>=4.0
+requests>=2.31
 
 # Firecrawl local parsers
 pdf-inspector>=1.0
 firecrawl-anydoc>=0.1
 
-# olmOCR (base; add GPU extras separately)
-olmocr>=0.4.0
+# Default OCR: LightOnOCR-3
+transformers>=5.5.4
+torch>=2.5
 
-# GPU path (install explicitly for CUDA):
-#   uv pip install 'olmocr[gpu]' torch torchvision torchaudio vllm \
-#     --extra-index-url https://download.pytorch.org/whl/cu128 \
-#     --index-strategy unsafe-best-match
+# Optional: olmOCR 2
+olmocr>=0.4.0

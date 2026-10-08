@@ -1,11 +1,10 @@
 # PDF → Markdown (local web UI)
 
-Firecrawl **pdf-inspector** + **AnyDoc** + AllenAI **olmOCR 2**.
-
 | Layer | Role |
 |--------|------|
 | **pdf-inspector** | Per-page classify + native text → Markdown |
-| **olmOCR 2** | VLM OCR for scanned / image pages |
+| **LightOnOCR-3** (default) | VLM OCR for scans (`LightOnOCR-3-0.8B`) |
+| **olmOCR 2** (optional) | Ai2 7B VLM path |
 | **AnyDoc** | docx/pptx/xlsx/… → Markdown |
 
 ## Quick start
@@ -17,57 +16,40 @@ cd /home/dev/pdf-md-tool
 
 Open **http://127.0.0.1:8787**
 
-## Single file
-
-Drop a PDF (or office doc) in the UI.
-
-## Folder batch
-
-**UI → Folder batch**: paste a local path (e.g. `/mnt/c/Users/hello/Documents/invoices`).
-
-Output:
-
-```text
-<your-folder>/markdown/
-  report.md
-  report.json
-  nested/scan.md
-  _batch_report.json
-```
-
-CLI:
-
-```bash
-cd /home/dev/pdf-md-tool
-source .venv/bin/activate
-export PYTHONPATH=.
-export PATH="$PWD/mamba/env/bin:$PATH"
-
-python -m app.batch /path/to/folder
-python -m app.batch /path/to/folder -o markdown -m native
-python -m app.batch /path/to/folder --no-recursive --no-skip-existing
-```
+Needs: `transformers>=5.5.4`, CUDA torch, poppler under `mamba/env` (bundled).
 
 ## Modes
 
-- **Auto** — native when clean; olmOCR when needed  
-- **Native** — pdf-inspector only  
-- **Full olmOCR 2** — whole doc through VLM  
-- **PP-OCR** — pdf-inspector PP-OCRv6  
-- **AnyDoc** — office formats  
+- **Auto** — native text via pdf-inspector; **LightOnOCR-3** on OCR pages
+- **Native** — pdf-inspector only
+- **Full LightOnOCR-3** — every page through LightOn
+- **Full olmOCR 2** — Ai2 pipeline
+- **PP-OCR** / **AnyDoc**
+
+Advanced: switch Auto’s engine to olmOCR, set model, or point at a vLLM URL (`LIGHTONOCR_BASE_URL` / server field).
+
+## Folder batch
+
+UI **Folder batch** or:
+
+```bash
+python -m app.batch /path/to/folder
+python -m app.batch 'C:\Users\hello\Downloads\docs' -m auto
+python -m app.batch /path/to/folder --ocr-engine lighton
+```
+
+Writes `<folder>/markdown/…`.
+
+## Env
+
+```bash
+# default engine is lighton
+export PDFMD_OCR_ENGINE=lighton   # or olmocr
+export LIGHTONOCR_MODEL=lightonai/LightOnOCR-3-0.8B
+# export LIGHTONOCR_BASE_URL=http://127.0.0.1:8010/v1
+# export LIGHTONOCR_MODE=plain    # or grounding
+```
 
 ## GPU
 
-```bash
-source .venv/bin/activate
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-```
-
-Torch **2.9+cu128** and **vllm** are in `.venv`. Free ~9 GB+ VRAM before local olmOCR, or set:
-
-```bash
-export OLMOCR_SERVER=http://127.0.0.1:8000/v1
-export OLMOCR_MODEL=allenai/olmOCR-2-7B-1025-FP8
-```
-
-Poppler is under `mamba/env` (no root).
+LightOnOCR-3-0.8B is the default for **~10 GB** cards. First run downloads weights from Hugging Face.

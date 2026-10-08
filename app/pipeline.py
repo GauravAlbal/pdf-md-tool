@@ -2,7 +2,7 @@
 
 Routing (Firecrawl pdf-inspector):
   - text_based pages → native markdown (fast, no GPU)
-  - scanned / image / mixed OCR pages → olmOCR 2 (VLM) when enabled
+  - scanned / image / mixed OCR pages → LightOnOCR-3 (default) or olmOCR 2
   - optional pdf-inspector PP-OCR as lightweight local OCR
 Non-PDF office docs → Firecrawl AnyDoc.
 """
@@ -10,13 +10,11 @@ Non-PDF office docs → Firecrawl AnyDoc.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -32,9 +30,16 @@ UPLOADS = ROOT / "uploads"
 WORKSPACE = ROOT / "workspace"
 POPPLER_BIN = ROOT / "mamba" / "env" / "bin"
 
-Mode = Literal["auto", "native", "olmocr", "ppocr", "anydoc"]
+Mode = Literal["auto", "native", "lighton", "olmocr", "ppocr", "anydoc"]
+OcrEngine = Literal["lighton", "olmocr"]
 
 OLMOCR_MODEL_DEFAULT = "allenai/olmOCR-2-7B-1025-FP8"
+LIGHTON_MODEL_DEFAULT = "lightonai/LightOnOCR-3-0.8B"
+DEFAULT_OCR_ENGINE: OcrEngine = (
+    "olmocr"
+    if os.environ.get("PDFMD_OCR_ENGINE", "lighton").lower() == "olmocr"
+    else "lighton"
+)
 
 
 @dataclass
@@ -68,12 +73,6 @@ def _env_path() -> dict[str, str]:
     return env
 
 
-def _safe_stem(name: str) -> str:
-    stem = Path(name).stem
-    stem = re.sub(r"[^\w.\-]+", "_", stem).strip("._") or "doc"
-    return stem[:80]
-
-
 def _is_pdf(filename: str, data: bytes) -> bool:
     if filename.lower().endswith(".pdf"):
         return True
@@ -85,7 +84,6 @@ def _page_markdown_map(path: Path) -> dict[int, tuple[str, bool]]:
     pages = pdf_inspector.extract_pages_markdown(str(path))
     out: dict[int, tuple[str, bool]] = {}
     for p in pages.pages:
-        # PageMarkdown.page is 0-indexed
         out[int(p.page) + 1] = (p.markdown or "", bool(p.needs_ocr))
     return out
 
@@ -113,7 +111,7 @@ def native_parse(path: Path) -> ParseResult:
             "native mode left them as-is / empty."
         )
     if result.has_encoding_issues:
-        warnings.append("Font encoding issues detected — consider olmOCR mode.")
+        warnings.append("Font encoding issues detected — consider LightOn/olmOCR mode.")
     return ParseResult(
         job_id="",
         filename=path.name,
@@ -143,7 +141,6 @@ def ppocr_parse(path: Path) -> ParseResult:
     try:
         ocr = pdf_inspector.process_pdf_with_ocr(str(path))
     except Exception as e:
-        # Fall back to native if OCR runtime missing
         base = native_parse(path)
         base.mode_used = "ppocr→native"
         base.warnings.append(f"pdf-inspector PP-OCR failed ({e}); used native extraction.")
@@ -197,25 +194,16 @@ def anydoc_parse(path: Path) -> ParseResult:
 
 def _find_olmocr_markdown(work: Path, pdf_path: Path) -> str | None:
     md_dir = work / "markdown"
-    if not md_dir.is_dir():
-        # newer layouts
-        candidates = list(work.rglob("*.md"))
-    else:
-        candidates = list(md_dir.rglob("*.md"))
+    candidates = list(md_dir.rglob("*.md")) if md_dir.is_dir() else list(work.rglob("*.md"))
     if not candidates:
         return None
     stem = pdf_path.stem.lower()
     for c in candidates:
         if c.stem.lower() == stem or stem in c.stem.lower():
             return c.read_text(encoding="utf-8", errors="replace")
-    # single file
     if len(candidates) == 1:
         return candidates[0].read_text(encoding="utf-8", errors="replace")
-    # concatenate sorted
-    parts = []
-    for c in sorted(candidates):
-        parts.append(c.read_text(encoding="utf-8", errors="replace"))
-    return "\n\n".join(parts)
+    return "\n\n".join(c.read_text(encoding="utf-8", errors="replace") for c in sorted(candidates))
 
 
 def _olmocr_cmd(
@@ -225,9 +213,7 @@ def _olmocr_cmd(
     model: str,
     server: str | None,
     api_key: str | None,
-    pages: list[int] | None,
 ) -> list[str]:
-    # Prefer module invocation from the project venv
     py = str(ROOT / ".venv" / "bin" / "python")
     if not Path(py).exists():
         py = shutil.which("python3") or "python3"
@@ -248,7 +234,6 @@ def _olmocr_cmd(
             cmd.extend(["--api_key", api_key])
         cmd.extend(["--workers", "1"])
     else:
-        # 3080 10GB is tight; leave headroom
         cmd.extend(["--gpu-memory-utilization", os.environ.get("OLMOCR_GPU_MEM", "0.85")])
     return cmd
 
@@ -264,7 +249,7 @@ def run_olmocr(
     work = WORKSPACE / f"olmocr-{uuid.uuid4().hex[:12]}"
     work.mkdir(parents=True, exist_ok=True)
     env = _env_path()
-    cmd = _olmocr_cmd(work, path, model=model, server=server, api_key=api_key, pages=None)
+    cmd = _olmocr_cmd(work, path, model=model, server=server, api_key=api_key)
     log.info("Running olmOCR: %s", " ".join(cmd[:8]) + " …")
     try:
         proc = subprocess.run(
@@ -279,11 +264,11 @@ def run_olmocr(
         raise RuntimeError(f"olmOCR timed out after {timeout_s}s") from e
     except FileNotFoundError as e:
         raise RuntimeError(
-            "olmOCR not runnable. Install with: pip install 'olmocr[gpu]' "
-            "(local GPU) or pip install olmocr + set OLMOCR_SERVER for remote vLLM."
+            "olmOCR not runnable. Install 'olmocr[gpu]' or set OLMOCR_SERVER."
         ) from e
 
     meta = {
+        "engine": "olmocr",
         "returncode": proc.returncode,
         "workspace": str(work),
         "stdout_tail": (proc.stdout or "")[-4000:],
@@ -305,121 +290,54 @@ def run_olmocr(
     return md, meta
 
 
-def hybrid_auto(
+def run_vlm_ocr(
     path: Path,
     *,
-    model: str,
-    server: str | None,
-    api_key: str | None,
-    force_olmocr_on_mixed: bool = True,
-) -> ParseResult:
-    """pdf-inspector native for clean pages; olmOCR for OCR-flagged pages / full scan."""
-    t0 = time.perf_counter()
-    detect = pdf_inspector.detect_pdf(str(path))
-    page_map = _page_markdown_map(path)
-    page_count = int(detect.page_count)
-    need_ocr = sorted(
-        {n for n, (_, flag) in page_map.items() if flag}
-        | set(detect.pages_needing_ocr or [])
-    )
-    # detect.pages_needing_ocr is 1-indexed per docs for detect_pdf
-    # Also force full olmOCR for pure scanned/image docs
-    fully_scan = detect.pdf_type in ("scanned", "image_based") or (
-        detect.pdf_type == "mixed" and force_olmocr_on_mixed and len(need_ocr) >= max(1, page_count // 2)
-    )
+    engine: OcrEngine = "lighton",
+    model: str | None = None,
+    server: str | None = None,
+    api_key: str | None = None,
+    pages: list[int] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Run default/selected VLM OCR engine on a PDF or image."""
+    suffix = path.suffix.lower()
+    is_image = suffix in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 
-    warnings: list[str] = []
-    pages_native = [n for n in range(1, page_count + 1) if n not in need_ocr]
-    pages_ocr: list[int] = []
-    meta: dict[str, Any] = {
-        "pdf_type": detect.pdf_type,
-        "confidence": detect.confidence,
-    }
-
-    if not need_ocr and detect.pdf_type == "text_based" and not detect.has_encoding_issues:
-        md = pdf_inspector.process_pdf(str(path)).markdown or _join_pages(
-            {n: m for n, (m, _) in page_map.items()}, page_count
+    if engine == "olmocr":
+        if is_image:
+            # olm pipeline accepts images too
+            return run_olmocr(
+                path,
+                model=model or OLMOCR_MODEL_DEFAULT,
+                server=server,
+                api_key=api_key,
+            )
+        return run_olmocr(
+            path,
+            model=model or OLMOCR_MODEL_DEFAULT,
+            server=server,
+            api_key=api_key,
         )
-        mode = "auto:native"
-    elif fully_scan or detect.has_encoding_issues:
-        try:
-            md, ometa = run_olmocr(path, model=model, server=server, api_key=api_key)
-            pages_ocr = list(range(1, page_count + 1))
-            pages_native = []
-            mode = "auto:olmocr-full"
-            meta["olmocr"] = {k: ometa[k] for k in ("model", "server", "workspace") if k in ometa}
-        except Exception as e:
-            warnings.append(f"olmOCR unavailable ({e}); falling back to native/pp-ocr path.")
-            try:
-                fb = ppocr_parse(path)
-                md = fb.markdown
-                pages_ocr = fb.pages_ocr
-                pages_native = fb.pages_native
-                mode = "auto:ppocr-fallback"
-                meta["fallback"] = str(e)[:500]
-            except Exception as e2:
-                base = native_parse(path)
-                md = base.markdown
-                mode = "auto:native-fallback"
-                warnings.append(f"PP-OCR also failed ({e2}).")
-    else:
-        # Selective: native pages kept; OCR only needed pages via temp PDF subset if possible,
-        # else full olmOCR and stitch.
-        native_md = {n: page_map[n][0] for n in pages_native if n in page_map}
-        try:
-            # For mixed docs, run olmOCR on whole PDF (pipeline is page-group based)
-            # then prefer native text on clean pages for fidelity/speed provenance.
-            ocr_md, ometa = run_olmocr(path, model=model, server=server, api_key=api_key)
-            pages_ocr = need_ocr
-            # If olmOCR returns one blob, use it for OCR pages only when we can split by markers
-            split = _split_olmocr_pages(ocr_md, page_count)
-            merged: dict[int, str] = {}
-            for n in range(1, page_count + 1):
-                if n in need_ocr and n in split and split[n].strip():
-                    merged[n] = split[n]
-                elif n in native_md and native_md[n].strip():
-                    merged[n] = native_md[n]
-                elif n in split:
-                    merged[n] = split[n]
-                else:
-                    merged[n] = native_md.get(n, "")
-            md = _join_pages(merged, page_count)
-            mode = "auto:hybrid"
-            meta["olmocr"] = {k: ometa[k] for k in ("model", "server", "workspace") if k in ometa}
-        except Exception as e:
-            warnings.append(f"olmOCR selective path failed ({e}); native only.")
-            md = _join_pages(native_md, page_count)
-            mode = "auto:native-partial"
-            pages_ocr = need_ocr
 
-    return ParseResult(
-        job_id="",
-        filename=path.name,
-        mode_used=mode,
-        pdf_type=detect.pdf_type,
-        confidence=float(detect.confidence),
-        page_count=page_count,
-        pages_native=pages_native,
-        pages_ocr=pages_ocr,
-        markdown=md,
-        processing_ms=int((time.perf_counter() - t0) * 1000),
-        warnings=warnings,
-        meta=meta,
+    from app.lighton import run_lighton_image, run_lighton_pdf
+
+    lo_model = model or os.environ.get("LIGHTONOCR_MODEL") or LIGHTON_MODEL_DEFAULT
+    # server arg: LightOn uses LIGHTONOCR_BASE_URL; allow override
+    base = server if server else None
+    if is_image:
+        return run_lighton_image(path, model_id=lo_model, base_url=base, api_key=api_key)
+    return run_lighton_pdf(
+        path, model_id=lo_model, base_url=base, api_key=api_key, pages=pages
     )
 
 
-def _split_olmocr_pages(md: str, page_count: int) -> dict[int, str]:
-    """Best-effort split on common page markers."""
-    # olmOCR sometimes emits form-feed or "Page N" style breaks
+def _split_page_markers(md: str, page_count: int) -> dict[int, str]:
     if "\f" in md:
         chunks = md.split("\f")
         return {i + 1: c.strip() for i, c in enumerate(chunks) if i < page_count}
-    # <!-- Page N --> markers (our hybrid) or similar
     parts = re.split(r"(?m)^(?:<!--\s*Page\s+(\d+)\s*-->|#{1,3}\s*Page\s+(\d+)\s*)$", md)
     if len(parts) > 1:
         out: dict[int, str] = {}
-        # re.split keeps groups: text, g1, g2, text, ...
-        i = 0
         preamble = parts[0]
         i = 1
         current = None
@@ -443,8 +361,120 @@ def _split_olmocr_pages(md: str, page_count: int) -> dict[int, str]:
             out[current] = "\n".join(buf).strip()
         if out:
             return out
-    # no markers — single blob
     return {1: md.strip()} if page_count >= 1 else {}
+
+
+def hybrid_auto(
+    path: Path,
+    *,
+    engine: OcrEngine,
+    model: str | None,
+    server: str | None,
+    api_key: str | None,
+    force_vlm_on_mixed: bool = True,
+) -> ParseResult:
+    """pdf-inspector native for clean pages; LightOn/olmOCR for OCR pages."""
+    t0 = time.perf_counter()
+    detect = pdf_inspector.detect_pdf(str(path))
+    page_map = _page_markdown_map(path)
+    page_count = int(detect.page_count)
+    need_ocr = sorted(
+        {n for n, (_, flag) in page_map.items() if flag} | set(detect.pages_needing_ocr or [])
+    )
+    fully_scan = detect.pdf_type in ("scanned", "image_based") or (
+        detect.pdf_type == "mixed"
+        and force_vlm_on_mixed
+        and len(need_ocr) >= max(1, page_count // 2)
+    )
+
+    warnings: list[str] = []
+    pages_native = [n for n in range(1, page_count + 1) if n not in need_ocr]
+    pages_ocr: list[int] = []
+    meta: dict[str, Any] = {
+        "pdf_type": detect.pdf_type,
+        "confidence": detect.confidence,
+        "ocr_engine": engine,
+    }
+
+    def _vlm(pages: list[int] | None = None) -> tuple[str, dict[str, Any]]:
+        return run_vlm_ocr(
+            path,
+            engine=engine,
+            model=model,
+            server=server,
+            api_key=api_key,
+            pages=pages,
+        )
+
+    if not need_ocr and detect.pdf_type == "text_based" and not detect.has_encoding_issues:
+        md = pdf_inspector.process_pdf(str(path)).markdown or _join_pages(
+            {n: m for n, (m, _) in page_map.items()}, page_count
+        )
+        mode = "auto:native"
+    elif fully_scan or detect.has_encoding_issues:
+        try:
+            md, ometa = _vlm(None)
+            pages_ocr = list(range(1, page_count + 1))
+            pages_native = []
+            mode = f"auto:{engine}-full"
+            meta["vlm"] = ometa
+        except Exception as e:
+            warnings.append(f"{engine} unavailable ({e}); falling back to native/pp-ocr.")
+            try:
+                fb = ppocr_parse(path)
+                md = fb.markdown
+                pages_ocr = fb.pages_ocr
+                pages_native = fb.pages_native
+                mode = "auto:ppocr-fallback"
+                meta["fallback"] = str(e)[:500]
+            except Exception as e2:
+                base = native_parse(path)
+                md = base.markdown
+                mode = "auto:native-fallback"
+                warnings.append(f"PP-OCR also failed ({e2}).")
+    else:
+        native_md = {n: page_map[n][0] for n in pages_native if n in page_map}
+        try:
+            # Prefer OCR only needed pages for LightOn; full doc for olmOCR stitch
+            if engine == "lighton" and need_ocr:
+                ocr_md, ometa = _vlm(need_ocr)
+            else:
+                ocr_md, ometa = _vlm(None)
+            pages_ocr = need_ocr
+            split = _split_page_markers(ocr_md, page_count)
+            merged: dict[int, str] = {}
+            for n in range(1, page_count + 1):
+                if n in need_ocr and n in split and split[n].strip():
+                    merged[n] = split[n]
+                elif n in native_md and native_md[n].strip():
+                    merged[n] = native_md[n]
+                elif n in split:
+                    merged[n] = split[n]
+                else:
+                    merged[n] = native_md.get(n, "")
+            md = _join_pages(merged, page_count)
+            mode = f"auto:hybrid-{engine}"
+            meta["vlm"] = ometa
+        except Exception as e:
+            warnings.append(f"{engine} selective path failed ({e}); native only.")
+            md = _join_pages(native_md, page_count)
+            mode = "auto:native-partial"
+            pages_ocr = need_ocr
+
+    return ParseResult(
+        job_id="",
+        filename=path.name,
+        mode_used=mode,
+        pdf_type=detect.pdf_type,
+        confidence=float(detect.confidence),
+        page_count=page_count,
+        pages_native=pages_native,
+        pages_ocr=pages_ocr,
+        markdown=md,
+        processing_ms=int((time.perf_counter() - t0) * 1000),
+        warnings=warnings,
+        meta=meta,
+    )
 
 
 def parse_file(
@@ -454,30 +484,52 @@ def parse_file(
     model: str | None = None,
     server: str | None = None,
     api_key: str | None = None,
+    ocr_engine: OcrEngine | None = None,
 ) -> ParseResult:
     _ensure_dirs()
-    model = model or os.environ.get("OLMOCR_MODEL", OLMOCR_MODEL_DEFAULT)
-    server = server if server is not None else os.environ.get("OLMOCR_SERVER") or None
-    api_key = api_key if api_key is not None else os.environ.get("OLMOCR_API_KEY") or None
+    engine: OcrEngine = ocr_engine or DEFAULT_OCR_ENGINE
+
+    # Mode shortcuts that pin engine
+    if mode == "lighton":
+        engine = "lighton"
+        mode_run: Mode | str = "vlm"
+    elif mode == "olmocr":
+        engine = "olmocr"
+        mode_run = "vlm"
+    else:
+        mode_run = mode
+
+    if engine == "lighton":
+        default_model = os.environ.get("LIGHTONOCR_MODEL", LIGHTON_MODEL_DEFAULT)
+        default_server = os.environ.get("LIGHTONOCR_BASE_URL") or None
+        default_key = os.environ.get("LIGHTONOCR_API_KEY") or None
+    else:
+        default_model = os.environ.get("OLMOCR_MODEL", OLMOCR_MODEL_DEFAULT)
+        default_server = os.environ.get("OLMOCR_SERVER") or None
+        default_key = os.environ.get("OLMOCR_API_KEY") or None
+
+    model = model or default_model
+    server = server if server is not None else default_server
+    api_key = api_key if api_key is not None else default_key
 
     suffix = path.suffix.lower()
     head = path.read_bytes()[:8]
     is_pdf = _is_pdf(path.name, head)
 
     if mode == "anydoc" or (
-        not is_pdf
-        and suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
+        not is_pdf and suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
     ):
         return anydoc_parse(path)
 
     if not is_pdf and suffix in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}:
-        # image → olmOCR
         t0 = time.perf_counter()
-        md, meta = run_olmocr(path, model=model, server=server, api_key=api_key)
+        md, meta = run_vlm_ocr(
+            path, engine=engine, model=model, server=server, api_key=api_key
+        )
         return ParseResult(
             job_id="",
             filename=path.name,
-            mode_used="olmocr-image",
+            mode_used=f"{engine}-image",
             pdf_type="image",
             confidence=None,
             page_count=1,
@@ -491,14 +543,16 @@ def parse_file(
         return native_parse(path)
     if mode == "ppocr":
         return ppocr_parse(path)
-    if mode == "olmocr":
+    if mode_run == "vlm":
         t0 = time.perf_counter()
         detect = pdf_inspector.detect_pdf(str(path))
-        md, meta = run_olmocr(path, model=model, server=server, api_key=api_key)
+        md, meta = run_vlm_ocr(
+            path, engine=engine, model=model, server=server, api_key=api_key
+        )
         return ParseResult(
             job_id="",
             filename=path.name,
-            mode_used="olmocr",
+            mode_used=engine,
             pdf_type=detect.pdf_type,
             confidence=float(detect.confidence),
             page_count=int(detect.page_count),
@@ -508,7 +562,9 @@ def parse_file(
             meta=meta,
         )
     # auto
-    return hybrid_auto(path, model=model, server=server, api_key=api_key)
+    return hybrid_auto(
+        path, engine=engine, model=model, server=server, api_key=api_key
+    )
 
 
 async def parse_file_async(path: Path, **kwargs: Any) -> ParseResult:

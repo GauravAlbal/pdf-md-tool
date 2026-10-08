@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from app.batch import process_folder
 from app.paths import describe_path_help, normalize_user_path
 from app.pipeline import (
+    DEFAULT_OCR_ENGINE,
+    LIGHTON_MODEL_DEFAULT,
     OLMOCR_MODEL_DEFAULT,
     ROOT,
     UPLOADS,
@@ -48,6 +50,7 @@ class BatchRequest(BaseModel):
     model: str = ""
     server: str = ""
     api_key: str = ""
+    ocr_engine: str = ""  # lighton | olmocr
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -76,9 +79,12 @@ async def health() -> dict[str, Any]:
         "torch": torch_ok,
         "torch_version": torch_ver,
         "cuda": cuda_ok,
+        "default_ocr_engine": DEFAULT_OCR_ENGINE,
+        "lighton_model": os.environ.get("LIGHTONOCR_MODEL", LIGHTON_MODEL_DEFAULT),
+        "lighton_base_url": os.environ.get("LIGHTONOCR_BASE_URL") or None,
         "olmocr_model": os.environ.get("OLMOCR_MODEL", OLMOCR_MODEL_DEFAULT),
         "olmocr_server": os.environ.get("OLMOCR_SERVER") or None,
-        "gpu_hint": "RTX 3080 10GB is snug for olmOCR-2-7B-FP8; free VRAM first.",
+        "gpu_hint": "Default OCR is LightOnOCR-3-0.8B (fits 10GB). olmOCR optional.",
     }
 
 
@@ -89,8 +95,9 @@ async def parse(
     model: str = Form(""),
     server: str = Form(""),
     api_key: str = Form(""),
+    ocr_engine: str = Form(""),
 ) -> JSONResponse:
-    if mode not in ("auto", "native", "olmocr", "ppocr", "anydoc"):
+    if mode not in ("auto", "native", "lighton", "olmocr", "ppocr", "anydoc"):
         raise HTTPException(400, f"invalid mode: {mode}")
 
     raw = await file.read()
@@ -107,6 +114,10 @@ async def parse(
 
     JOBS[job_id] = {"status": "running", "filename": orig}
 
+    eng = ocr_engine.strip() or None
+    if eng and eng not in ("lighton", "olmocr"):
+        raise HTTPException(400, f"invalid ocr_engine: {eng}")
+
     try:
         result = await parse_file_async(
             dest,
@@ -114,6 +125,7 @@ async def parse(
             model=model.strip() or None,
             server=server.strip() or None,
             api_key=api_key.strip() or None,
+            ocr_engine=eng,  # type: ignore[arg-type]
         )
         result.job_id = job_id
         out_md = RESULTS / f"{job_id}.md"
@@ -132,7 +144,7 @@ async def parse(
 @app.post("/api/batch")
 async def batch(req: BatchRequest) -> JSONResponse:
     """Process every supported file under a local folder → folder/<out_subdir>/."""
-    if req.mode not in ("auto", "native", "olmocr", "ppocr", "anydoc"):
+    if req.mode not in ("auto", "native", "lighton", "olmocr", "ppocr", "anydoc"):
         raise HTTPException(400, f"invalid mode: {req.mode}")
 
     try:
@@ -142,6 +154,10 @@ async def batch(req: BatchRequest) -> JSONResponse:
 
     if not folder.is_dir():
         raise HTTPException(400, describe_path_help(folder))
+
+    eng = (req.ocr_engine or "").strip() or None
+    if eng and eng not in ("lighton", "olmocr"):
+        raise HTTPException(400, f"invalid ocr_engine: {eng}")
 
     job_id = uuid.uuid4().hex[:16]
     JOBS[job_id] = {
@@ -157,7 +173,6 @@ async def batch(req: BatchRequest) -> JSONResponse:
             return
         prog = list(job.get("progress") or [])
         prog.append(ev)
-        # keep last 200 events
         job["progress"] = prog[-200:]
         job["last"] = ev
 
@@ -173,6 +188,7 @@ async def batch(req: BatchRequest) -> JSONResponse:
                 model=req.model.strip() or None,
                 server=req.server.strip() or None,
                 api_key=req.api_key.strip() or None,
+                ocr_engine=eng,  # type: ignore[arg-type]
                 on_progress=on_progress,
             )
             payload = report.to_dict()

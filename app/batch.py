@@ -107,6 +107,7 @@ def process_folder(
     model: str | None = None,
     server: str | None = None,
     api_key: str | None = None,
+    ocr_engine: str | None = None,
     on_progress: Any = None,
 ) -> BatchReport:
     root = normalize_user_path(str(folder))
@@ -154,6 +155,7 @@ def process_folder(
                 model=model,
                 server=server,
                 api_key=api_key,
+                ocr_engine=ocr_engine,  # type: ignore[arg-type]
             )
             dest.write_text(result.markdown or "", encoding="utf-8")
             # sidecar meta optional
@@ -249,7 +251,13 @@ def main(argv: list[str] | None = None) -> int:
         "-m",
         "--mode",
         default="auto",
-        choices=["auto", "native", "olmocr", "ppocr", "anydoc"],
+        choices=["auto", "native", "lighton", "olmocr", "ppocr", "anydoc"],
+    )
+    p.add_argument(
+        "--ocr-engine",
+        default=None,
+        choices=["lighton", "olmocr"],
+        help="VLM backend for auto mode (default: lighton)",
     )
     p.add_argument("--no-recursive", action="store_true")
     p.add_argument("--no-skip-existing", action="store_true")
@@ -277,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         server=args.server,
         api_key=args.api_key,
+        ocr_engine=args.ocr_engine,
         on_progress=prog,
     )
     print(
