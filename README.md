@@ -34,7 +34,7 @@ UI **Folder batch** or:
 
 ```bash
 python -m app.batch /path/to/folder
-python -m app.batch 'C:\Users\hello\Downloads\docs' -m auto
+python -m app.batch 'C:\Users\<you>\Downloads\docs' -m auto
 python -m app.batch /path/to/folder --ocr-engine lighton
 ```
 

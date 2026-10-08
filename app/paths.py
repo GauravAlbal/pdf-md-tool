@@ -85,6 +85,6 @@ def describe_path_help(failed: str | Path) -> str:
     p = str(failed)
     return (
         f"not a directory: {p}\n"
-        "Tip (WSL): use /mnt/c/Users/hello/... or C:\\Users\\hello\\... "
+        "Tip (WSL): use /mnt/c/Users/<you>/... or C:\\Users\\<you>\\... "
         "(Windows paths are converted automatically)."
     )
